@@ -1,66 +1,62 @@
-with open(path1, 'rb') as fd:
-    buffer = fd.read(656 * 496 * np.dtype(np.uint8).itemsize)
-im_invec = np.frombuffer(buffer, dtype=np.uint8, count=656*496)
-im1 = np.reshape(im_invec, (656, 496))
+import numpy as np
 
-# Save the original image
-Image.fromarray(im1).save('original_image.png')
+def bayerp(input_path):
+    bayer_text = "Bayer_Image"
+    height = 3000
+    width = 4000
+    input_filename = input_path
+    output_filename = "C:/Users/teia-potti-SESDS/Desktop/camera/scripts/Bayerp.bmp"
 
-# Read the uv data using path2
-with open(path2, 'rb') as fd:
-    buffer = fd.read(168 * 124 * np.dtype(np.int16).itemsize)
-uvdata = np.frombuffer(buffer, dtype=np.int16, count=168*124)
+    bits_per_line = width * 10  # 10 bits per pixel
+    bytes_per_line = bits_per_line // 8
+    if bits_per_line % 8 != 0:
+        bytes_per_line += 1
+    padding_bytes_per_line = 24  # extra bytes per line
 
-# Separate u and v components
-uvec = uvdata[::2]  # Take every other sample starting from index 0
-vvec = uvdata[1::2]  # Take every other sample starting from index 1
+    with open(input_filename, "rb") as f:
+        img_data = []
+        for line in range(height):
+            line_data = f.read(bytes_per_line)
+            byte_array = np.frombuffer(line_data, dtype=np.uint8)
+            if len(byte_array) < bytes_per_line:
+                # Handle incomplete line if necessary
+                continue
+            byte_array = byte_array.reshape(-1, 5)
 
-# Reshape u and v vectors
-u = uvec.reshape((84, 124))
-v = vvec.reshape((84, 124))
+            b0 = byte_array[:, 0].astype(np.uint16)
+            b1 = byte_array[:, 1].astype(np.uint16)
+            b2 = byte_array[:, 2].astype(np.uint16)
+            b3 = byte_array[:, 3].astype(np.uint16)
+            b4 = byte_array[:, 4].astype(np.uint16)
 
-# Crop u and v to match the image size
-u_cropped = u[:82, :]
-v_cropped = v[:82, :]
+            pixel0 = ((b0 << 2) | (b1 >> 6)) & 0x3FF
+            pixel1 = (((b1 & 0x3F) << 4) | (b2 >> 4)) & 0x3FF
+            pixel2 = (((b2 & 0x0F) << 6) | (b3 >> 2)) & 0x3FF
+            pixel3 = (((b3 & 0x03) << 8) | b4) & 0x3FF
 
-# Resize the image to match u and v dimensions
-im1_scaled = cv2.resize(im1, (124, 82), interpolation=cv2.INTER_AREA)
+            # Flatten the pixels and append to the list
+            pixels_line = np.column_stack((pixel0, pixel1, pixel2, pixel3)).flatten()
+            img_data.append(pixels_line)
+            # Read and discard padding bytes
+            f.read(padding_bytes_per_line)
 
-# Save the scaled image
-Image.fromarray(im1_scaled).save('scaled_image.png')
+    # Convert the list of arrays into a single NumPy array
+    image_array = np.array(img_data)
+    raw_image = image_array.reshape((height, width))
 
-# Interpolate u and v to match the grid
-siz = 5  # Adjusted for fewer arrows
-xgrid = np.arange(0, 124, siz)
-ygrid = np.arange(0, 82, siz)
-xi, yi = np.meshgrid(xgrid, ygrid)
+    # Convert 10-bit pixels to 8-bit by shifting
+    raw_image_8bit = (raw_image >> 2).astype(np.uint8)
 
-# Create interpolation functions
-interp_u = RectBivariateSpline(np.arange(u_cropped.shape[0]), np.arange(u_cropped.shape[1]), u_cropped)
-interp_v = RectBivariateSpline(np.arange(v_cropped.shape[0]), np.arange(v_cropped.shape[1]), v_cropped)
+    # Create the Bayer output image
+    bayer_output = np.zeros((height, width, 3), dtype=np.uint8)
+    # Red channel
+    bayer_output[0::2, 0::2, 0] = raw_image_8bit[0::2, 0::2]
+    # Green channel (two positions)
+    bayer_output[0::2, 1::2, 1] = raw_image_8bit[0::2, 1::2]
+    bayer_output[1::2, 0::2, 1] = raw_image_8bit[1::2, 0::2]
+    # Blue channel
+    bayer_output[1::2, 1::2, 2] = raw_image_8bit[1::2, 1::2]
 
-# Interpolate u and v
-Vxi = interp_u(yi[:,0], xi[0,:])
-Vyi = interp_v(yi[:,0], xi[0,:])
-
-# Scale down the vector components to reduce arrow length
-scaling_factor = 20  # Adjust as needed
-Vxi_scaled = Vxi / scaling_factor
-Vyi_scaled = Vyi / scaling_factor
-
-# Compute the magnitude of vectors
-magnitude = np.hypot(Vxi_scaled, Vyi_scaled)
-
-# Cap the maximum arrow length
-max_arrow_length = 3  # Adjust as needed
-mask = magnitude > max_arrow_length
-Vxi_scaled[mask] = Vxi_scaled[mask] * max_arrow_length / magnitude[mask]
-Vyi_scaled[mask] = Vyi_scaled[mask] * max_arrow_length / magnitude[mask]
-
-# Plot and save the image with quiver
-plt.figure(figsize=(8, 6))
-plt.imshow(im1_scaled, cmap='gray')
-plt.quiver(xi, yi, Vxi_scaled, Vyi_scaled, color='red', scale_units='xy', angles='xy', scale=1)
-plt.axis('image')
-plt.savefig('image_with_quiver.png')
-plt.close()
+    # Save or display the image as needed
+    # For example, using OpenCV to save the image:
+    # cv2.imwrite(output_filename, bayer_output)
