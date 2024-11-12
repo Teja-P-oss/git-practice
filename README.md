@@ -1,13 +1,15 @@
-with open('Scene000000_CAM® NonTnrFrm_D5_FI_W 0 Preview P501 LME _Emt-GREY _Comp-0_PCnt-2 Meta-0_L1008x756_20241007', 'rb') as fd:
-    im_invec = np.fromfile(fd, dtype=np.uint8, count=656*496)
+with open(path1, 'rb') as fd:
+    buffer = fd.read(656 * 496 * np.dtype(np.uint8).itemsize)
+im_invec = np.frombuffer(buffer, dtype=np.uint8, count=656*496)
 im1 = np.reshape(im_invec, (656, 496))
 
 # Save the original image
 Image.fromarray(im1).save('original_image.png')
 
-# Read the uv data
-with open('Scene000000_CAMO NonTnrFrm D5 F1 W 2 Preview P591 LME DST_Fat-GREY_Comp-0_PCnt-2 Meta-0_504x189_20241007_144127044.raw', 'rb') as fd:
-    uvdata = np.fromfile(fd, dtype=np.int16, count=168*124)
+# Read the uv data using path2
+with open(path2, 'rb') as fd:
+    buffer = fd.read(168 * 124 * np.dtype(np.int16).itemsize)
+uvdata = np.frombuffer(buffer, dtype=np.int16, count=168*124)
 
 # Separate u and v components
 uvec = uvdata[::2]  # Take every other sample starting from index 0
@@ -28,7 +30,7 @@ im1_scaled = cv2.resize(im1, (124, 82), interpolation=cv2.INTER_AREA)
 Image.fromarray(im1_scaled).save('scaled_image.png')
 
 # Interpolate u and v to match the grid
-siz = 3
+siz = 5  # Adjusted for fewer arrows
 xgrid = np.arange(0, 124, siz)
 ygrid = np.arange(0, 82, siz)
 xi, yi = np.meshgrid(xgrid, ygrid)
@@ -41,10 +43,24 @@ interp_v = RectBivariateSpline(np.arange(v_cropped.shape[0]), np.arange(v_croppe
 Vxi = interp_u(yi[:,0], xi[0,:])
 Vyi = interp_v(yi[:,0], xi[0,:])
 
+# Scale down the vector components to reduce arrow length
+scaling_factor = 20  # Adjust as needed
+Vxi_scaled = Vxi / scaling_factor
+Vyi_scaled = Vyi / scaling_factor
+
+# Compute the magnitude of vectors
+magnitude = np.hypot(Vxi_scaled, Vyi_scaled)
+
+# Cap the maximum arrow length
+max_arrow_length = 3  # Adjust as needed
+mask = magnitude > max_arrow_length
+Vxi_scaled[mask] = Vxi_scaled[mask] * max_arrow_length / magnitude[mask]
+Vyi_scaled[mask] = Vyi_scaled[mask] * max_arrow_length / magnitude[mask]
+
 # Plot and save the image with quiver
-plt.figure()
+plt.figure(figsize=(8, 6))
 plt.imshow(im1_scaled, cmap='gray')
-plt.quiver(xi, yi, Vxi, Vyi, scale=3, color='red')
+plt.quiver(xi, yi, Vxi_scaled, Vyi_scaled, color='red', scale_units='xy', angles='xy', scale=1)
 plt.axis('image')
 plt.savefig('image_with_quiver.png')
 plt.close()
