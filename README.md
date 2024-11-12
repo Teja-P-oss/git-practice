@@ -1,55 +1,50 @@
-@echo off
-setlocal enabledelayedexpansion
+with open('Scene000000_CAM® NonTnrFrm_D5_FI_W 0 Preview P501 LME _Emt-GREY _Comp-0_PCnt-2 Meta-0_L1008x756_20241007', 'rb') as fd:
+    im_invec = np.fromfile(fd, dtype=np.uint8, count=656*496)
+im1 = np.reshape(im_invec, (656, 496))
 
-REM Set the device directory and destination directory on your PC
-set "REMOTE_DIR=/data/vendor/camena"
-set "DEST_DIR=C:\Users\teja.potti.SECDS\Desktop"
+# Save the original image
+Image.fromarray(im1).save('original_image.png')
 
-REM Initialize an array to keep track of pulled files to avoid duplicates
-set "PULLED_FILES="
+# Read the uv data
+with open('Scene000000_CAMO NonTnrFrm D5 F1 W 2 Preview P591 LME DST_Fat-GREY_Comp-0_PCnt-2 Meta-0_504x189_20241007_144127044.raw', 'rb') as fd:
+    uvdata = np.fromfile(fd, dtype=np.int16, count=168*124)
 
-REM First, list files matching *Reprocess*.yuv and *Reprocess*.raw
-for /f "delims=" %%F in ('adb shell "find %REMOTE_DIR% -type f \( -name ""*Reprocess*.yuv"" -o -name ""*Reprocess*.raw"" \) 2>/dev/null"') do (
-    set "FILE=%%F"
-    REM Extract the filename from the full path
-    for %%I in ("!FILE!") do set "FILENAME=%%~nxI"
-    
-    REM Check if the filename contains more than one of the patterns: MCFP, RGBP, BYRP
-    set "COUNT=0"
-    for %%P in (MCFP RGBP BYRP) do (
-        echo "!FILENAME!" | findstr /i "%%P" >nul && (
-            set /a COUNT+=1
-        )
-    )
-    if !COUNT! gtr 1 (
-        REM Check if the file has already been pulled
-        echo "!PULLED_FILES!" | findstr /i "!FILENAME!" >nul || (
-            REM Pull the file
-            adb pull "!FILE!" "%DEST_DIR%"
-            REM Add the filename to the list of pulled files
-            set "PULLED_FILES=!PULLED_FILES! !FILENAME!"
-        )
-    )
-)
+# Separate u and v components
+uvec = uvdata[::2]  # Take every other sample starting from index 0
+vvec = uvdata[1::2]  # Take every other sample starting from index 1
 
-REM Apart from the above, if an LME file is present once, pull it once
-REM We need to ensure we don't pull an LME file if it's already been pulled
-set "LME_PULLED=0"
-for /f "delims=" %%F in ('adb shell "find %REMOTE_DIR% -type f -name ""*LME*"" 2>/dev/null"') do (
-    set "FILE=%%F"
-    for %%I in ("!FILE!") do set "FILENAME=%%~nxI"
-    REM Check if we've already pulled this file
-    echo "!PULLED_FILES!" | findstr /i "!FILENAME!" >nul || (
-        if !LME_PULLED! equ 0 (
-            adb pull "!FILE!" "%DEST_DIR%"
-            set "LME_PULLED=1"
-            REM Optionally, add it to the list of pulled files
-            set "PULLED_FILES=!PULLED_FILES! !FILENAME!"
-        )
-    )
-    if !LME_PULLED! equ 1 goto :EndLME
-)
-:EndLME
+# Reshape u and v vectors
+u = uvec.reshape((84, 124))
+v = vvec.reshape((84, 124))
 
-endlocal
-pause
+# Crop u and v to match the image size
+u_cropped = u[:82, :]
+v_cropped = v[:82, :]
+
+# Resize the image to match u and v dimensions
+im1_scaled = cv2.resize(im1, (124, 82), interpolation=cv2.INTER_AREA)
+
+# Save the scaled image
+Image.fromarray(im1_scaled).save('scaled_image.png')
+
+# Interpolate u and v to match the grid
+siz = 3
+xgrid = np.arange(0, 124, siz)
+ygrid = np.arange(0, 82, siz)
+xi, yi = np.meshgrid(xgrid, ygrid)
+
+# Create interpolation functions
+interp_u = RectBivariateSpline(np.arange(u_cropped.shape[0]), np.arange(u_cropped.shape[1]), u_cropped)
+interp_v = RectBivariateSpline(np.arange(v_cropped.shape[0]), np.arange(v_cropped.shape[1]), v_cropped)
+
+# Interpolate u and v
+Vxi = interp_u(yi[:,0], xi[0,:])
+Vyi = interp_v(yi[:,0], xi[0,:])
+
+# Plot and save the image with quiver
+plt.figure()
+plt.imshow(im1_scaled, cmap='gray')
+plt.quiver(xi, yi, Vxi, Vyi, scale=3, color='red')
+plt.axis('image')
+plt.savefig('image_with_quiver.png')
+plt.close()
