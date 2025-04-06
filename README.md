@@ -1,42 +1,55 @@
-bits_per_line = width * 10  # 10 bits per pixel
-    bytes_per_line = bits_per_line // 8
-    padding_bytes_per_line = 24  # extra bytes per line
-
-    with open(input_filename, "rb") as f:
-        img_data = []
-        for line in range(height):
-            line_data = f.read(bytes_per_line)
-            byte_array = np.frombuffer(line_data, dtype=np.uint8)
-            byte_array = byte_array.reshape(-1, 5)
-
-            b0 = byte_array[:, 0].astype(np.uint16)
-            b1 = byte_array[:, 1].astype(np.uint16)
-            b2 = byte_array[:, 2].astype(np.uint16)
-            b3 = byte_array[:, 3].astype(np.uint16)
-            b4 = byte_array[:, 4].astype(np.uint16)
-
-            pixel0 = ((b0 << 2) | (b1 >> 6)) & 0x3FF
-            pixel1 = (((b1 & 0x3F) << 4) | (b2 >> 4)) & 0x3FF
-            pixel2 = (((b2 & 0x0F) << 6) | (b3 >> 2)) & 0x3FF
-            pixel3 = (((b3 & 0x03) << 8) | b4) & 0x3FF
-
-            pixels_line = np.column_stack((pixel0, pixel1, pixel2, pixel3))
-            img_data.append(pixels_line)
-
-            # Skip the padding bytes
-            f.read(padding_bytes_per_line)
-
-    image_array = np.vstack(img_data)
-    raw_image = image_array.reshape((height, width))
-
-    # Scale the 10-bit raw image data to 8-bit
-    raw_image_8bit = (raw_image >> 2).astype(np.uint8)
-
-    # Create the Bayer output image
-    bayer_output = np.zeros((height, width, 3), dtype=np.uint8)
-
-    # Map the raw image data to the correct color channels
-    bayer_output[0::2, 0::2, 1] = raw_image_8bit[0::2, 0::2]  # Gr (Green on red line)
-    bayer_output[0::2, 1::2, 0] = raw_image_8bit[0::2, 1::2]  # R (Red)
-    bayer_output[1::2, 0::2, 2] = raw_image_8bit[1::2, 0::2]  # B (Blue)
-    bayer_output[1::2, 1::2, 1] = raw_image_8bit[1::2, 1::2]  # Gb (Green on blue line)
+def floyd_steinberg_dither(self, input_bit_depth=10, output_bit_depth=6):
+        """
+        Floyd-Steinberg dithering with single line buffer for error diffusion
+        Reducing from input_bit_depth to output_bit_depth (e.g., 10-bit to 6-bit)
+        """
+        input_max = (1 << input_bit_depth) - 1  # 1023 for 10-bit
+        output_max = (1 << output_bit_depth) - 1  # 63 for 6-bit
+        
+        # Calculate the bit shift amount
+        bit_shift = input_bit_depth - output_bit_depth  # 4 bits
+        
+        # Create a deep copy of the image to work with
+        result = self.image.copy().astype(np.float32)
+        
+        # Single-line error buffer (for bottom pixels)
+        error_buffer = np.zeros((self.width, 3), dtype=np.float32)
+        
+        for y in range(self.height):
+            # Reset error buffer at the start of each new row
+            if y > 0:
+                error_buffer = np.zeros((self.width, 3), dtype=np.float32)
+            
+            for x in range(self.width):
+                for c in range(3):
+                    # Add error from buffer to current pixel
+                    old_pixel = result[y, x, c] + error_buffer[x, c]
+                    old_pixel = np.clip(old_pixel, 0, input_max)
+                    
+                    # Perform bit reduction by quantizing
+                    # For 10->6 bit, we're keeping the 6 most significant bits
+                    new_pixel_reduced = (np.floor(old_pixel / (1 << bit_shift))) * (1 << bit_shift)
+                    
+                    # Calculate quantization error
+                    quant_error = old_pixel - new_pixel_reduced
+                    
+                    # Save the quantized value
+                    result[y, x, c] = new_pixel_reduced
+                    
+                    # Distribute error to neighboring pixels using Floyd-Steinberg weights
+                    if x < self.width - 1:
+                        error_buffer[x + 1, c] += quant_error * 7/16  # right
+                    
+                    if y < self.height - 1:  # Use error buffer for next row
+                        if x > 0:
+                            error_buffer[x - 1, c] += quant_error * 3/16  # bottom-left
+                        error_buffer[x, c] += quant_error * 5/16  # bottom
+                        if x < self.width - 1:
+                            error_buffer[x + 1, c] += quant_error * 1/16  # bottom-right
+        
+        # Clamp values and ensure they're properly quantized to output bit depth
+        result = np.clip(result, 0, input_max)
+        
+        # Convert back to original data type
+        self.image = result.astype(np.uint16)
+        return self.image
